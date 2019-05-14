@@ -1,6 +1,6 @@
 <img src="data/figs/rise_logo.png" alt="Estructura Carpeta" align="center">
 
-## The role of built environment on risk of cardiovascular disease in Medellin, Colombia
+## The role of built environment on risk of cardiovascular disease in Medellin, Colombia.
 
 
 K. Rahimi<sup>1</sup>, A. Hong<sup>1</sup>, J.C. Duque<sup>2</sup>, J.E. Patino<sup>2</sup>, V.M. Lopera<sup>3</sup>, S. Zapata<sup>3</sup>
