@@ -2,7 +2,7 @@
 
 ## Structure
 
-Include the description
+Python and R notebooks used for specific data processing tasks. Each notebook has its own description.
 
 ## Setup
 
