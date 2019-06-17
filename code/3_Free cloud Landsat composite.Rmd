@@ -1,0 +1,372 @@
+---
+title: "R Notebook - free-cloud landsat composite"
+output: html_notebook
+---
+# Free cloud Landsat multitemporal composite
+
+---> to allow system functions within R notebooks to work, 
+open RStudio in terminal: 
+open -na RStudio
+
+## Code
+### Load libraries
+```{r}
+library(rgdal)
+library(rgeos)
+library(tiff)
+library(raster)
+library(RStoolbox)
+library(grid)
+library(gridExtra)
+library(rasterVis)
+library(mmand)
+# library(sf) # it needs an updated version of R
+library(gplots)
+library(ggplot2)
+library(plyr)
+library(randomForest)
+library(caret)
+library(maptools)
+library(rlist)
+library(DMwR)
+library(snow) # for multi-core computing
+```
+
+## 1 - mask clouds
+
+### List image files in folder (*.tif)
+
+Landsat surface reflectance images were donwload using Google Earth Engine (in Python).
+(Landsat 8 with atmospheric correction).
+
+```{r}
+listFiles <- list.files(path = "imagery", pattern = "*tif$", full.names = TRUE)
+fileNames <- substring(listFiles, 9, 34) # to get a clean file name
+listFiles
+fileNames
+```
+
+### Load files to raster stack objects
+as a list of raster stacks objects, each object includes ?? layers (bands).
+
+...to access particular bands: stack[[3]][[2]] (band 2 of stack 3)
+- no data values: NaN (verified in QGIS)
+```{r}
+l8_stack <- lapply(listFiles, stack)
+names(l8_stack) <- fileNames
+# test: print layer information for first stack in list l8_stack
+print(l8_stack[[1]]@layers)
+```
+
+### Check the name of bands with gdalinfo 
+Identify which number is the pixel_qa band
+```{bash}
+gdalinfo "imagery/LC08_009056_20160622.tif"
+```
+
+### Plot true color images
+```{r}
+ggRGB(l8_stack[[1]], r = 4, g = 3, b = 2, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+    ggtitle(names(l8_stack)[[1]])
+ggRGB(l8_stack[[2]], r = 4, g = 3, b = 2, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+    ggtitle(names(l8_stack)[[2]])
+ggRGB(l8_stack[[3]], r = 4, g = 3, b = 2, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+    ggtitle(names(l8_stack)[[3]])
+ggRGB(l8_stack[[4]], r = 4, g = 3, b = 2, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+    ggtitle(names(l8_stack)[[4]])
+ggRGB(l8_stack[[5]], r = 4, g = 3, b = 2, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+    ggtitle(names(l8_stack)[[5]])
+ggRGB(l8_stack[[6]], r = 4, g = 3, b = 2, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+    ggtitle(names(l8_stack)[[6]])
+ggRGB(l8_stack[[7]], r = 4, g = 3, b = 2, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+    ggtitle(names(l8_stack)[[7]])
+ggRGB(l8_stack[[8]], r = 4, g = 3, b = 2, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+    ggtitle(names(l8_stack)[[8]])
+```
+
+
+### Mask clouds and shadows using band 11 (pixel_qa):
+(mask and replace pixel values)
+
+for Landsat 8:
+- Clouds: 386, 392, 416, 480, 992
+- Shaodws: 328
+- Water: 324
+- Good pixels: 322
+-> mask: values > 324 in band 8
+
+Before filling values:
+Grow NA regions to cover adjacent pixels that could have anomalous values, 
+using dilate morphological operator
+```{r}
+# square kernel 3x3 for dilate operation on mask
+sker3 <- shapeKernel(c(3,3), type = c("box"))
+
+# make mask from pixel_qa band (8) 
+l8_stack_length <- length(l8_stack)
+for (i in 1:l8_stack_length){
+  mask1 <- (l8_stack[[i]][[11]] > 324)
+  # apply morphological filter to grow mask (dilate)
+  mask1 <- dilate(as.matrix(mask1), sker3)
+  mask1 <- dilate(mask1, sker3) # repeat dilate operation
+  # convert mask values (1) to NA
+  mask1 <- raster(mask1, template = l8_stack[[i]][[11]])
+  mask1[mask1 > 0] <- NA
+  # apply the mask to corresponding image
+  l8_stack[[i]] <-mask(l8_stack[[i]], mask = mask1)
+  # set the name of each raster file
+  l8_stack[[i]]@file@name <- substring(l8_stack[[i]]@data@names[[1]], 1, 20) 
+}
+rm(mask1, i, sker3)
+```
+
+
+## 2 - Relative radiometric normalization
+
+Function: pifMatch (RStoolbox)
+- method = "ed" (euclidean distance)
+- quantile = 0.95
+- reference (more recent) image = l8_stack[[6]]
+
+Usage:
+img_adj <- pifMatch(img, ref, method = "ed", quantile = 0.99, returnPifMap = TRUE,
+      returnSimMap = TRUE, returnModels = TRUE)
+
+Reference image (selected based on visual inspection less cloud cover):
+"LC08_009056_20171218.tif"
+
+Plot reference image: l8_stack[[8]]
+```{r}
+ggRGB(l8_stack[[8]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("reference image: 2017")
+```
+
+- create an empty list/stack to store results of image normalization
+- relative normalization of all images in series
+- reference image: l8_stack[[8]]
+```{r}
+# create empty list
+l8_norm <- list()
+
+# normalize all images before reference
+for (i in 1:7){
+  n_i <- pifMatch(l8_stack[[i]], l8_stack[[8]], method = "ed", 
+                      quantile = 0.95, 
+                      returnPifMap = FALSE,
+                      returnModels = FALSE, 
+                      returnSimMap = FALSE)
+  l8_norm[[i]] <- n_i$img
+}
+
+# copy reference image to output stack
+l8_norm[[8]] <- l8_stack[[8]]
+
+# copy image names
+names(l8_norm) <- names(l8_stack)
+
+# remove temporal outputs
+rm(n_i, i, l8_stack, l8_stack_length)
+```
+
+Plot normalized images:
+```{r}
+ggRGB(l8_norm[[8]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("reference image: 20171218")
+ggRGB(l8_norm[[7]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20160622")
+ggRGB(l8_norm[[6]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20160521")
+ggRGB(l8_norm[[5]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20160505")
+ggRGB(l8_norm[[4]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20151229")
+ggRGB(l8_norm[[3]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20150111")
+ggRGB(l8_norm[[2]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20140820")
+ggRGB(l8_norm[[1]], r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20130716")
+```
+
+
+## 3 - Fill NA gaps in 2017 with pixel values from previous dates
+(2016, 2015, 2014 and 2013 in that order)
+### l8_2017_cf filled with 20160622
+```{r}
+# fill with 20160622 image values
+l8_2017_cf <- cover(l8_norm[[8]], l8_norm[[7]])
+ggRGB(l8_2017_cf, r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20171218 -filled with 20160622")
+```
+
+### l8_2017_cf filled with 20160521
+```{r}
+# fill with 20160521 image values
+l8_2017_cf <- cover(l8_2017_cf, l8_norm[[6]])
+ggRGB(l8_2017_cf, r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20171218 -filled with 20160622, 20160521")
+```
+
+### l8_2017_cf filled with 20160505
+```{r}
+# fill with 201605005 image values
+l8_2017_cf <- cover(l8_2017_cf, l8_norm[[5]])
+ggRGB(l8_2017_cf, r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20171218 -filled with 20160622, 20160521, 201605005")
+```
+
+### l8_2017_cf filled with 20151229
+```{r}
+# fill with 20151229 image values
+l8_2017_cf <- cover(l8_2017_cf, l8_norm[[4]])
+ggRGB(l8_2017_cf, r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20171218 -filled with 20160622, 20160521, 201605005, 20151229")
+```
+
+### l8_2017_cf filled with 20150111
+```{r}
+# fill with 20150111 image values
+# l8_2017_cf <- cover(l8_2017_cf, l8_norm[[3]])
+ggRGB(l8_2017_cf, r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20171218 -filled with 20160622, 20160521, 201605005, 20151229, 20150111") +
+  theme(plot.title = element_text(size = 10))
+```
+
+### l8_2017_cf filled with 20140820
+```{r}
+# fill with 20140820 image values
+l8_2017_cf <- cover(l8_2017_cf, l8_norm[[2]])
+ggRGB(l8_2017_cf, r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20171218 -filled with 20160622, 20160521, 201605005, 20151229, 20150111, 20140820") +
+  theme(plot.title = element_text(size = 8))
+```
+
+### l8_2017_cf filled with 20130716
+```{r}
+# fill with 20130716 image values
+l8_2017_cf <- cover(l8_2017_cf, l8_norm[[1]])
+ggRGB(l8_2017_cf, r = 5, g = 4, b = 3, stretch = "lin", quantiles = c(0.02, 0.98)) + 
+  ggtitle("20171218 -filled with 160622, 160521, 1605005, 151229, 150111, 140820, 130716") +
+  theme(plot.title = element_text(size = 7))
+```
+
+
+## 4 - Write result to disk
+```{r}
+writeRaster(l8_2017_cf, filename = 'L8_20171218_cf.tif', format = "GTiff", overwrite = TRUE)
+
+# remove temporal stack with normalized images
+rm(l8_norm)
+```
+
+## 5 - Calculate normalized difference indices:
+- NDVI
+- NDWI
+- NDBI
+
+### Normalized Difference Thematic Index - generic function FUN.nd
+```{r}
+FUN.nd <- function(x,y){
+  ND <- (1.0*(x-y)/(x+y))
+  return(ND)
+  }
+```
+
+#### Normalized difference indexes calc
+```{r}
+NDVI_20171218 <- overlay(l8_2017_cf[[5]], l8_2017_cf[[4]], fun = FUN.nd) 
+NDWI_20171218 <- overlay(l8_2017_cf[[3]], l8_2017_cf[[5]], fun = FUN.nd) 
+NDBI_20171218 <- overlay(l8_2017_cf[[6]], l8_2017_cf[[5]], fun = FUN.nd) 
+```
+
+##### Fill NA values - NDVI
+Fill remaining NA values with neighborhood interpotlation in index images and plot
+using knn inmputatin with k = 24 for a 5x5 neighborhood
+(focal can also be a valid alternative -this uses the mean of the a 3x3 neighborhood: 
+raster <- focal(raster, w=matrix(1/9, nrow=3, ncol=3), NAonly=TRUE, na.rm=TRUE))
+```{r}
+NDVI_20171218_f <- knnImputation(as.matrix(NDVI_20171218), k = 24, scale = F, meth = 'median')
+NDVI_20171218_f <- raster(NDVI_20171218_f, template = NDVI_20171218)
+ggR(NDVI_20171218_f[[1]], geom_raster = TRUE, stretch = "none") +
+  ggtitle("NDVI") +
+  scale_fill_gradient2(name = "NDVI", low = "darkviolet", mid = "gold", high = "green4", aesthetics = "fill")
+```
+
+##### Fill NA values - NDWI
+```{r}
+NDWI_20171218_f <- knnImputation(as.matrix(NDWI_20171218), k = 24, scale = F, meth = 'median')
+NDWI_20171218_f <- raster(NDWI_20171218_f, template = NDWI_20171218)
+ggR(NDWI_20171218_f[[1]], geom_raster = TRUE, stretch = "none") +
+  ggtitle("NDWI") +
+  scale_fill_gradient2(name = "NDWI", low = "darkviolet", mid = "gold", high = "green4", aesthetics = "fill")
+```
+
+##### Fill NA values - NDBI
+```{r}
+NDBI_20171218_f <- knnImputation(as.matrix(NDBI_20171218), k = 24, scale = F, meth = 'median')
+NDBI_20171218_f <- raster(NDBI_20171218_f, template = NDBI_20171218)
+ggR(NDBI_20171218_f[[1]], geom_raster = TRUE, stretch = "none") +
+  ggtitle("NDBI") +
+  scale_fill_gradient2(name = "NDBI", low = "darkviolet", mid = "gold", high = "green4", aesthetics = "fill")
+```
+
+
+### Coerce results to -1,1 range
+rasterlayer[rasterlayer < -1] <- -1
+rasterlayer[rasterlayer > 1] <- 1
+```{r}
+# NDVI
+NDVI_20171218_f[NDVI_20171218_f < -1] <- -1
+NDVI_20171218_f[NDVI_20171218_f > 1] <- 1
+
+# NDWI
+NDWI_20171218_f[NDWI_20171218_f < -1] <- -1
+NDWI_20171218_f[NDWI_20171218_f > 1] <- 1
+
+# NDBI
+NDBI_20171218_f[NDBI_20171218_f < -1] <- -1
+NDBI_20171218_f[NDBI_20171218_f > 1] <- 1
+```
+
+#### remove previos index images
+```{r}
+rm(NDVI_20171218, NDWI_20171218, NDBI_20171218)
+```
+
+
+#### Plot results
+```{r}
+ggR(NDVI_20171218_f[[1]], geom_raster = TRUE, stretch = "none") +
+  ggtitle("NDVI") +
+  scale_fill_gradient2(name = "NDVI", low = "darkviolet", mid = "gold", high = "green4", aesthetics = "fill")
+ggR(NDWI_20171218_f[[1]], geom_raster = TRUE, stretch = "none") +
+  ggtitle("NDWI") +
+  scale_fill_gradient2(name = "NDWI", low = "darkviolet", mid = "gold", high = "green4", aesthetics = "fill")
+ggR(NDBI_20171218_f[[1]], geom_raster = TRUE, stretch = "none") +
+  ggtitle("NDBI") +
+  scale_fill_gradient2(name = "NDBI", low = "darkviolet", mid = "gold", high = "green4", aesthetics = "fill")
+```
+
+### Check for remaining NA values
+```{r}
+print("NDVI:")
+summary(getValues(NDVI_20171218_f))
+print("NDWI:")
+summary(getValues(NDWI_20171218_f))
+print("NDBI:")
+summary(getValues(NDBI_20171218_f))
+```
+
+
+### Write results to disk
+```{r}
+writeRaster(NDVI_20171218_f, filename = 'L8_20171218_NDVI.tif', format = "GTiff", overwrite = TRUE)
+writeRaster(NDWI_20171218_f, filename = 'L8_20171218_NDWI.tif', format = "GTiff", overwrite = TRUE)
+writeRaster(NDBI_20171218_f, filename = 'L8_20171218_NDBI.tif', format = "GTiff", overwrite = TRUE)
+```
+
+
+## 6 - Clean environment
+```{r}
+remove(list=ls())
+```
