@@ -37,10 +37,10 @@ This repository contains the spatial dataset and code use for the econometric an
 
 @misc{Patino2021,
   author = {Patino, Jorge E and Hong, Andy and Duque, Juan C. and Rahimi, Kazem and Zapata, Silvana and Lopera, Verónica M.},
-  title = { Built environment and public health in Medellin },
+  title = { Built environment and mortality risk from cardiovascular disease and diabetes in Medellin, Colombia },
   year = {2021},
   note = {data retrieved from RiSE-group, 
-          \url{https://github.com/Rise-group/desigualdades_intraurbanas_Colombia}},
+          \url{https://https://github.com/Rise-group/built_environment_cardio_disease}},
 }
 
 ```
