@@ -1,0 +1,836 @@
+---
+title: "Built environment and mortality risk from cardiovascular disease and diabetes in Medellin, Colombia: an ecological study"
+subtitle: "Econometric analysis of the corrected manuscript submitted to Landscape and Urban Planning journal"
+output: html_notebook
+author: Jorge E. Patiño, Andy Hong, Juan C. Duque, Kazem Rahimi, Silvana Zapata, and Verónica Lopera
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+Quantitative analysis of the relationships between built-environment 
+features and public health outcomes in Medellin, Colombia, at the neighborhood 
+(barrio) level. International collaboration between the Oxford Martin School at
+Oxford University (UK), RiSE Group at EAFIT University (CO), and the Medellin's
+Health Office (CO).  
+
+**Acknowledgements:**  
+This work was completed with support from the PEAK Urban 
+Programme, supported by 501 UKRI’s Global Challenge Research Fund, 
+Grant Ref.: ES/P011055/1. Additionally, Kazem Rahimi is in
+receipt of grants from the National Institute for Health Research 
+(NIHR) Oxford Biomedical Research Centre (BRC), the Oxford Martin School (OMS), 
+University of Oxford and the British Heart Foundation grant ref: PG/18/65/33872. 
+The views expressed are those of the authors and not necessarily those of the OMS, 
+the UK National Health Service (NHS), the NIHR or the
+Department of Health and Social Care. The funding organizations had no role in design or
+conduct of the study; collection, management, analysis, and interpretation of the data;
+preparation, review, or approval of the manuscript; or decision to submit the manuscript for
+publication.
+
+
+# Datasets
+**Spatial units of analysis:** inputs/data_MDE_health_built_env_geo.shp  
+**Variables:** data_MDE_health_built_env.csv
+
+# Computing environment
+Load libraries:
+```{r}
+library(sp) # for creating neighborhoods contiguity matrix
+library(sf) # for handling spatial units of analysis
+library(tidyverse) # for plots and maps
+library(MASS) # for robust regression
+library(mctest) # for multicolinearity tests
+library(stargazer) # for models and dataset summaries
+library(jtools) # for single effects plots, used for quadratic variables
+library(gridExtra) # for arranging several plots in single graph
+library(spdep) # for spatial dependence tests
+library(fields) # for calculating distances for distance contiguity matrix
+library(tmap) # for mapping
+library(corrplot) # for correlation matrix
+```
+
+Load datasets and join:
+```{r}
+df = read_csv("../inputs/data_MDE_health_built_env.cvs")
+sf = st_read("../inputs/data_MDE_health_built_env_geo.shp")
+dataset = left_join(sf, df, by = "CODIGO")
+rm(df, sf)
+```
+
+Remove variable X1;
+```{r}
+dataset$X1 = NULL
+```
+
+# Mapping
+## Mortality rates
+```{r}
+tm_shape(dataset) + 
+  tm_fill(col = c("DCS_avg", "IHD_avg", "CVD_avg", "DM_avg"),
+          title = c("", "", "", ""),
+          style = "quantile",
+          ) + 
+  tm_facets(ncol = 4) +
+  tm_scale_bar(breaks = c(0, 2), position = c("RIGHT", "BOTTOM")) +
+  tm_layout(asp = 0.9,
+            legend.position = c("LEFT", "TOP"),
+            legend.text.size = 0.35,
+            legend.width = 0.35,
+            panel.show = TRUE,
+            panel.labels = c("Diseases of the Circulatory System", 
+                             "Ischemic Heart Disesae", 
+                             "Cerebrovascular Disease", 
+                             "Diabetes Mellitus"),
+            panel.label.size = 0.5,
+            frame = "gray50",
+            )
+tmap_save(filename = "../outputs/fig 1 mortality rates maps.png",
+          height = 5,
+          width = 16,
+          units = "cm",
+          dpi = 300)
+```
+
+## Urban form metrics
+```{r}
+tm_shape(dataset) + 
+  tm_fill(col = c("int_dens",
+                  "int_dens_2",
+                  "slope_mean",
+                  "NDVI_mean",
+                  "lu_entropy_a",
+                  "p_area_ind",
+                  "sl_p_ind",
+                  "POI_dens",
+                  "POI_dens_2",
+                  "pdens_2017",
+                  "pdens_2_t",
+                  "f_hig_SES"),
+          title = c("", "", "", "", "", "", "", "", "", "", "", ""),
+          style = "jenks",
+          n = 5
+          ) + 
+  tm_scale_bar(breaks = c(0, 2), position = c("RIGHT", "BOTTOM")) +
+  tm_layout(asp = 1.1,
+            legend.position = c("LEFT", "TOP"),
+            legend.text.size = 0.5,
+            legend.width = 0.4,
+            panel.show = TRUE,
+            panel.labels = c("Intersection density",
+                             "Int. dens. squared",
+                             "Average slope",
+                             "Average NDVI",
+                             "Land use mix",
+                             "% industrial land",
+                             "% ind. land at neighbors",
+                             "Density of amenities",
+                             "Dens. of amenities squared",
+                             "Population density",
+                             "Pop. density squared",
+                             "F. high SE"),
+            panel.label.size = 0.85,
+            frame = FALSE,
+            )
+```
+
+
+# Econometrics
+## Dataset summary:
+```{r}
+stargazer(st_drop_geometry(dataset), type = "text", digits = 2)
+```
+
+## Correlation matrix:
+```{r}
+variables = c("DCS_avg",
+              "IHD_avg",
+              "CVD_avg",
+              "DM_avg",
+              "int_dens", 
+              "int_dens_2",
+              "slope_mean",
+              "NDVI_mean",
+              "lu_entropy_a",
+              "p_area_ind",
+              "sl_p_ind",
+              "POI_dens",
+              "POI_dens_2",
+              "pdens_2017",
+              "pdens_2_t",
+              "f_hig_SES")
+x = st_drop_geometry(dataset)[, variables]
+cor_pred = cor(x, method = "spearman")
+corrplot.mixed(cor_pred, lower.col = "black", tl.pos = "lt",  tl.cex = 0.5,
+               title = "Spearman correlation coefficients", cl.cex = 0.5,
+               number.cex = 0.5, mar = c(0.5, 2, 3, 1))
+```
+
+## Linear models
+Notes: Land use entropy adjusted with firm location data from DANE (see paper for a detailed explanation).
+```{r}
+DCS_ols = lm( #OLS
+  DCS_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a + 
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    I(pdens_2017^2) + 
+    f_hig_SES, 
+  data = dataset)
+DCS_rl = rlm( # robust regression
+  DCS_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    I(pdens_2017^2) + 
+    f_hig_SES, 
+  data = dataset)
+IHD_ols = lm(
+  IHD_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    I(pdens_2017^2) + 
+    f_hig_SES, 
+  data = dataset)
+IHD_rl = rlm(
+  IHD_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    I(pdens_2017^2) + 
+    f_hig_SES, 
+  data = dataset)
+CVD_ols = lm(
+  CVD_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    I(pdens_2017^2) + 
+    f_hig_SES, 
+  data = dataset)
+CVD_rl = rlm(
+  CVD_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    I(pdens_2017^2) + 
+    f_hig_SES, 
+  data = dataset)
+DM_ols = lm(
+  DM_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    I(pdens_2017^2) + 
+    f_hig_SES, 
+  data = dataset)
+DM_rl = rlm(
+  DM_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    I(pdens_2017^2) + 
+    f_hig_SES, 
+  data = dataset)
+```
+
+## Multicolinearity Condition Number
+Calculated on OLS models
+```{r}
+paste0("DCS: ", omcdiag(DCS_ols, Inter = F)$odiags[6])
+paste0("IHD: ", omcdiag(IHD_ols, Inter = F)$odiags[6])
+paste0("CVD: ", omcdiag(CVD_ols, Inter = F)$odiags[6])
+paste0("DM: ", omcdiag(DM_ols, Inter = F)$odiags[6])
+```
+
+## Spatial dependence tests
+### Create contiguity matrices
+```{r}
+# build contiguity matrix
+Wr = poly2nb(as_Spatial(dataset), queen = FALSE) # Rook matrix
+Wq = poly2nb(as_Spatial(dataset), queen = TRUE) # Queen matrix
+# convert matrix to lists
+listWr = nb2listw(Wr, style = "W", zero.policy = TRUE)
+listWq = nb2listw(Wq, style = "W", zero.policy = TRUE)
+# inverse distance matrix
+mycoords <- coordinates(as_Spatial(dataset))
+mydm <- rdist(mycoords)                  # computes distance in projected coordinates
+for(i in 1:dim(mydm)[1]) {mydm[i,i] = 0} # renders exactly zero all diagonal elements
+mydm[mydm > 1000] <- 0                   # all distances > 1000 miles are set to zero
+mydm <- ifelse(mydm!=0, 1/mydm, mydm)    # inverting distances
+listWid <- mat2listw(mydm, style="W")    # create a (normalized) listw object
+```
+
+### Lagrange Multiplier (LM) tests
+Test run on OLS models using three different contiguity matrix specifications:  
+- Rook: `listWr`.  
+- Queen: `listWq`.  
+- Inverse distance: `listWid`.  
+
+#### DCS
+```{r}
+LM_Wr = lm.LMtests(DCS_ols, listWr, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+LM_Wq = lm.LMtests(DCS_ols, listWq, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+LM_Wid = lm.LMtests(DCS_ols, listWid, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+summary(LM_Wr)
+summary(LM_Wq)
+summary(LM_Wid)
+rm(LM_Wr, LM_Wq, LM_Wid)
+```
+
+#### IHD
+```{r}
+LM_Wr = lm.LMtests(IHD_ols, listWr, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+LM_Wq = lm.LMtests(IHD_ols, listWq, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+LM_Wid = lm.LMtests(IHD_ols, listWid, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+summary(LM_Wr)
+summary(LM_Wq)
+summary(LM_Wid)
+rm(LM_Wr, LM_Wq, LM_Wid)
+```
+
+#### CeVD
+```{r}
+LM_Wr = lm.LMtests(CVD_ols, listWr, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+LM_Wq = lm.LMtests(CVD_ols, listWq, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+LM_Wid = lm.LMtests(CVD_ols, listWid, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+summary(LM_Wr)
+summary(LM_Wq)
+summary(LM_Wid)
+rm(LM_Wr, LM_Wq, LM_Wid)
+```
+
+#### DM
+```{r}
+LM_Wr = lm.LMtests(DM_ols, listWr, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+LM_Wq = lm.LMtests(DM_ols, listWq, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+LM_Wid = lm.LMtests(DM_ols, listWid, test=c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+summary(LM_Wr)
+summary(LM_Wq)
+summary(LM_Wid)
+rm(LM_Wr, LM_Wq, LM_Wid)
+```
+
+## Model's diagnostic plots
+```{r}
+par(mfrow = c(2,2), mar = c(4,4,5,2))
+plot(DCS_ols, main = "DCS OLS")
+plot(DCS_rl, main = "DCS Robust Linear")
+plot(IHD_ols, main = "IHD OLS")
+plot(IHD_rl, main = "IHD Robust Linear")
+plot(CVD_ols, main = "CVD OLS")
+plot(CVD_rl, main = "CVD Robust Linear")
+plot(DM_ols, main = "DM OLS")
+plot(DM_rl, main = "DM Robust Linear")
+```
+
+
+## Models' residuals plots
+### DCS
+#### OLS residuals and map:
+```{r}
+par(mfrow = c(1,2))
+plot(resid(DCS_ols), main = "resid(DCS_ols)")
+hist(resid(DCS_ols), breaks = 50, main = "resid(DCS_ols)")
+# add residuals to data frame
+dataset$res_DCS_ols = resid(DCS_ols)
+# map
+tm_shape(dataset) + 
+  tm_fill(col = "res_DCS_ols", title = "DCS OLS residuals", 
+          style = "sd", n = 7, palette = "PiYG", midpoint = NA) +
+  tm_legend(legend.outside = TRUE, legend.outside.position = "right")
+```
+#### Robust linear regression residuals and map:
+```{r}
+par(mfrow = c(1,2))
+plot(resid(DCS_rl), main = "resid(DCS_rl)")
+hist(resid(DCS_rl), breaks = 50, main = "resid(DCS_rl)")
+# add residuals to data frame
+dataset$res_DCS_rl = resid(DCS_rl)
+# map
+tm_shape(dataset) + 
+  tm_fill(col = "res_DCS_rl", title = "DCS Robust linear residuals", 
+          style = "sd", n = 7, palette = "PiYG", midpoint = NA) +
+  tm_legend(legend.outside = TRUE, legend.outside.position = "right")
+```
+
+
+### IHD
+#### OLS residuals and map:
+```{r}
+par(mfrow = c(1,2))
+plot(resid(IHD_ols), main = "resid(IHD_ols)")
+hist(resid(IHD_ols), breaks = 50, main = "resid(IHD_ols)")
+# add residuals to data frame
+dataset$res_IHD_ols = resid(IHD_ols)
+# map
+tm_shape(dataset) + 
+  tm_fill(col = "res_IHD_ols", title = "IHD OLS residuals", 
+          style = "sd", n = 7, palette = "PiYG", midpoint = NA) +
+  tm_legend(legend.outside = TRUE, legend.outside.position = "right")
+```
+
+#### Robust linear regression residuals and map:
+```{r}
+par(mfrow = c(1,2))
+plot(resid(IHD_rl), main = "resid(IHD_rl)")
+hist(resid(IHD_rl), breaks = 50, main = "resid(IHD_rl)")
+# add residuals to data frame
+dataset$res_IHD_rl = resid(IHD_rl)
+# map
+tm_shape(dataset) + 
+  tm_fill(col = "res_IHD_rl", title = "IHD Robust linear residuals", 
+          style = "sd", n = 7, palette = "PiYG", midpoint = NA) +
+  tm_legend(legend.outside = TRUE, legend.outside.position = "right")
+```
+
+### CVD
+#### OLS residuals and map:
+```{r}
+par(mfrow = c(1,2))
+plot(resid(CVD_ols), main = "resid(CVD_ols)")
+hist(resid(CVD_ols), breaks = 50, main = "resid(CVD_ols)")
+# add residuals to data frame
+dataset$res_CVD_ols = resid(CVD_ols)
+# map
+tm_shape(dataset) + 
+  tm_fill(col = "res_CVD_ols", title = "CVD OLS residuals", 
+          style = "sd", n = 7, palette = "PiYG", midpoint = NA) +
+  tm_legend(legend.outside = TRUE, legend.outside.position = "right")
+```
+
+#### Robust linear regression residuals and map:
+```{r}
+par(mfrow = c(1,2))
+plot(resid(CVD_rl), main = "resid(CVD_rl)")
+hist(resid(CVD_rl), breaks = 50, main = "resid(CVD_rl)")
+# add residuals to data frame
+dataset$res_CVD_rl = resid(CVD_rl)
+# map
+tm_shape(dataset) + 
+  tm_fill(col = "res_CVD_rl", title = "CVD Robust linear residuals", 
+          style = "sd", n = 7, palette = "PiYG", midpoint = NA) +
+  tm_legend(legend.outside = TRUE, legend.outside.position = "right")
+```
+
+### DM
+#### OLS residuals and map:
+```{r}
+par(mfrow = c(1,2))
+plot(resid(DM_ols), main = "resid(DM_ols)")
+hist(resid(DM_ols), breaks = 50, main = "resid(DM_ols)")
+# add residuals to data frame
+dataset$res_DM_ols = resid(DM_ols)
+# map
+tm_shape(dataset) + 
+  tm_fill(col = "res_DM_ols", title = "DM OLS residuals", 
+          style = "sd", n = 7, palette = "PiYG", midpoint = NA) +
+  tm_legend(legend.outside = TRUE, legend.outside.position = "right")
+```
+
+#### Robust linear regression residuals and map:
+```{r}
+par(mfrow = c(1,2))
+plot(resid(DM_rl), main = "resid(DM_rl)")
+hist(resid(DM_rl), breaks = 50, main = "resid(DM_rl)")
+# add residuals to data frame
+dataset$res_DM_rl = resid(DM_rl)
+# map
+tm_shape(dataset) + 
+  tm_fill(col = "res_DM_rl", title = "DM Robust linear residuals", 
+          style = "sd", n = 7, palette = "PiYG", midpoint = NA) +
+  tm_legend(legend.outside = TRUE, legend.outside.position = "right")
+```
+
+## Effects plots
+### Plots with local references
+Values from 3 Medellin administrative neighborhoods.
+#### Selected neighborhoods:  
+- El Tesoro: int_dens 52, POI_dens 5.1, pdens_2017 8966  
+- Sevilla: int_dens 207, POI_dens 118, pdens_2017 11046  
+- Francisco Antonio Zea: int_dens 438, POI_dens 34, pdens_2017 61024  
+
+#### Intersection density
+Models with significant term: DCS, CVD, and DM
+```{r}
+p1 = effect_plot(DCS_rl, pred = int_dens, interval = TRUE, robust = TRUE) + 
+  xlim(0, 500) + 
+  #ylim(0, 150) +
+  xlab("") +
+  ylab("Diseases of the Circulatory System") + 
+  geom_vline(xintercept = 52, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 207, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 438, colour = "orange", alpha = 0.5)
+p2 = effect_plot(CVD_rl, pred = int_dens, interval = TRUE, robust = TRUE) +
+  xlim(0, 500) + 
+  #ylim(0, 30) +
+  xlab("") +
+  ylab("Cerebrovascular Disease") + 
+  geom_vline(xintercept = 52, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 207, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 438, colour = "orange", alpha = 0.5)
+p3 = effect_plot(DM_rl, pred = int_dens, interval = TRUE, robust = TRUE) +
+  xlim(0, 500) +
+  #ylim(0, 15) +
+  xlab("Intersection density") +
+  ylab("Diabetes Mellitus") + 
+  geom_vline(xintercept = 52, colour = "orange", alpha = 0.5) +  
+  annotate("text", 
+           label = "El Tesoro", 
+           x = 52, 
+           y = 1, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = -0.15) + 
+  geom_vline(xintercept = 207, colour = "orange", alpha = 0.5) + 
+  annotate("text", 
+           label = "Sevilla", 
+           x = 207, 
+           y = 1, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = -0.15) +
+  geom_vline(xintercept = 438, colour = "orange", alpha = 0.5) + 
+  annotate("text", 
+           label = "F. A. Zea", 
+           x = 438, 
+           y = 1, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = -0.15)
+g = arrangeGrob(p1, p2, p3, nrow = 3)
+ggsave("../outputs/effects_intersection_density.png", g, height = 10, width = 2.5)
+rm(p1, p2, p3, g)
+```
+
+#### Density of amenities
+Models with significant term: DCS, IHD, and CVD
+```{r}
+p1 = effect_plot(DCS_rl, pred = POI_dens, interval = TRUE, robust = TRUE) +
+  xlim(0, 300) +
+  xlab("") +
+  ylab("Diseases of the Circulatory System") +
+  geom_vline(xintercept = 5, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 34, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 118, colour = "orange", alpha = 0.5)
+p2 = effect_plot(IHD_rl, pred = POI_dens, interval = TRUE, robust = TRUE) +
+  xlim(0, 300) +
+  xlab("") +
+  ylab("Ischemic Heart Disease") +
+  geom_vline(xintercept = 5, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 34, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 118, colour = "orange", alpha = 0.5)
+p3 = effect_plot(CVD_rl, pred = POI_dens, interval = TRUE, robust = TRUE) +
+  xlim(0, 300) +
+  xlab("Density of amenities") +
+  ylab("Cerebrovascular Disease") +
+  geom_vline(xintercept = 5, colour = "orange", alpha = 0.5) + 
+  annotate("text", 
+           label = "El Tesoro", 
+           x = 5, 
+           y = -50, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = -0.15) +
+  geom_vline(xintercept = 34, colour = "orange", alpha = 0.5) + 
+  annotate("text", 
+           label = "F. A. Zea", 
+           x = 34, 
+           y = -50, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = -0.15) +
+  geom_vline(xintercept = 118, colour = "orange", alpha = 0.5) + 
+  annotate("text", 
+           label = "Sevilla", 
+           x = 118, 
+           y = -50, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = -0.15)
+g = arrangeGrob(p1, p2, p3, nrow = 3)
+ggsave("../outputs/effects_dens_amenities.png", g, height = 10, width = 2.5)
+rm(p1, p2, p3, g)
+```
+
+#### Population density
+Plot for DCS, IHD, and CVD:
+```{r}
+p1 = effect_plot(DCS_rl, pred = pdens_2017, interval = TRUE, robust = TRUE) + 
+  xlim(0, 80000) +
+  xlab("") +
+  ylab("Diseases of the Circulatory System") +
+  geom_vline(xintercept = 8966, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 11046, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 61024, colour = "orange", alpha = 0.5)
+p2 = effect_plot(IHD_rl, pred = pdens_2017, interval = TRUE, robust = TRUE) +
+  xlim(0, 80000) +
+  xlab("") +
+  ylab("Ischemic Heart Disease") +
+  geom_vline(xintercept = 8966, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 11046, colour = "orange", alpha = 0.5) + 
+  geom_vline(xintercept = 61024, colour = "orange", alpha = 0.5)
+p3 = effect_plot(CVD_rl, pred = pdens_2017, interval = TRUE, robust = TRUE) +
+  xlim(0, 80000) +
+  xlab("Population density") +
+  ylab("Cerebrovascular Disease") +geom_vline(xintercept = 8966, colour = "orange", alpha = 0.5) + 
+  annotate("text", 
+           label = "El Tesoro", 
+           x = 8966, 
+           y = 10, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = -0.3) + 
+  geom_vline(xintercept = 11046, colour = "orange", alpha = 0.5) +  
+  annotate("text", 
+           label = "Sevilla", 
+           x = 11046, 
+           y = 10, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = 1.2) +
+  geom_vline(xintercept = 61024, colour = "orange", alpha = 0.5) + 
+  annotate("text", 
+           label = "F. A. Zea", 
+           x = 61024, 
+           y = 10, 
+           size = 3, 
+           colour = "orange", 
+           angle = 90, 
+           vjust = -0.4)
+g = arrangeGrob(p1, p2, p3, nrow = 3)
+ggsave("../outputs/effects_pop_density.png", g, height = 10, width = 2.5)
+rm(p1, p2, p3, g)
+```
+
+## Models summary
+### Rewrite nice models
+Rewrite models with squared population density divided by 1,000,000:
+```{r}
+DCS_ols = lm( #OLS
+  DCS_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a + 
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    pdens_2_t + 
+    f_hig_SES, 
+  data = dataset)
+DCS_rl = rlm( # robust regression
+  DCS_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    pdens_2_t + 
+    f_hig_SES, 
+  data = dataset)
+IHD_ols = lm(
+  IHD_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    pdens_2_t + 
+    f_hig_SES, 
+  data = dataset)
+IHD_rl = rlm(
+  IHD_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    pdens_2_t + 
+    f_hig_SES, 
+  data = dataset)
+CVD_ols = lm(
+  CVD_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    pdens_2_t + 
+    f_hig_SES, 
+  data = dataset)
+CVD_rl = rlm(
+  CVD_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    pdens_2_t + 
+    f_hig_SES, 
+  data = dataset)
+DM_ols = lm(
+  DM_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    pdens_2_t + 
+    f_hig_SES, 
+  data = dataset)
+DM_rl = rlm(
+  DM_avg ~ 
+    int_dens + 
+    I(int_dens^2) + 
+    slope_mean + 
+    NDVI_mean + 
+    lu_entropy_a +
+    p_area_ind + 
+    sl_p_ind + 
+    POI_dens + 
+    I(POI_dens^2) + 
+    pdens_2017 +
+    pdens_2_t + 
+    f_hig_SES, 
+  data = dataset)
+```
+
+### Summary
+Summary table:
+```{r}
+stargazer(DCS_ols, DCS_rl, IHD_ols, IHD_rl, CVD_ols, CVD_rl, DM_ols, DM_rl,
+          keep.stat = c("rsq", "adj.rsq", "ser", "f"),
+          dep.var.labels = c("DCS", "IHD", "CeVD", "DM"),
+          covariate.labels = c("Constant", 
+                               "Intersection density",
+                               "Int. dens. squared",
+                               "Average slope",
+                               "Average NDVI",
+                               "Land use mix",
+                               "% industrial land",
+                               "% ind. land at neighbors",
+                               "Density of amenities",
+                               "Dens. of amenities squared",
+                               "Population density",
+                               "Pop. density squared",
+                               "F. high SE"),
+          type = "text", align = TRUE, no.space = FALSE, intercept.bottom = FALSE, intercept.top = TRUE, df = FALSE,
+          title = "Health and built environment relationships in Medellin, Colombia",
+          add.lines = list(c("Condition Number", "23.4", "", "23.4", "", "23.4", "", "23.4", ""),
+                           c("", "", "", "", "", "", "", "", ""),
+                           c("Spatial dependence tests", "", "", "", "", "", "", "", ""),
+                           c("LM Error", "2.1149", "", "0.0025", "", "0.3105", "", "0.5479", ""),
+                           c("LM Lag", "1.4287", "", "1.2549", "", "1.3569", "", " 1.1056", ""),
+                           c("", "", "", "", "", "", "", "", "")),
+          notes = c("Pop. density squared divided by 1,000,000",
+                    "N = 245"))
+```
+
+
+
+
+END.
